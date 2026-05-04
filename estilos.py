@@ -20,7 +20,7 @@ COLOR_TEXTO_LINEA    = "#9AA5B4"
 COLOR_TITULO         = "#FFFFFF"
 COLOR_SUBTITULO      = "#CBD5E0"
 
-# == Resaltado de sintaxis ===
+# == Resaltado de sintaxis 
 COLOR_SH = {
     "keyword":  "#7B2FBE",
     "number":   "#C84B31",

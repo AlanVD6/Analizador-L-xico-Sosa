@@ -1,5 +1,3 @@
-
-import re
 from dataclasses import dataclass, field
 from tokens import (
     PALABRAS_RESERVADAS, SIGUIENTE_PALABRA_RESERVADA,
@@ -7,274 +5,222 @@ from tokens import (
     SIGNOS_PUNTUACION, SIGUIENTE_SIGNO,
     LLAVES, PARENTESIS,
     IDENTIFICADORES_CONOCIDOS, SIGUIENTE_IDENTIFICADOR,
-    TOKEN_ENTERO_DEC, TOKEN_ENTERO_NEG, TOKEN_FLOTANTE,
-    TOKEN_STRING, SIGUIENTE_STRING,
+    TOKEN_ENTERO_DEC, TOKEN_FLOTANTE,
     NOMBRES,
 )
 
+# ── Categoría de cada carácter ────────────────────────────────────────────────
+_OP_CHARS = set('+-*/=<>!&|^~%@')
+_ILEGALES = set('ñÑáéíóúüÁÉÍÓÚÜ')
+
+def _cat(c: str) -> str:
+    if c in _ILEGALES:          return 'ILG'
+    if c.isdigit():             return 'DIG'
+    if c.isalpha() or c == '_': return 'LET'
+    if c in _OP_CHARS:          return 'OP'
+    if c == '.':                return 'PNT'
+    if c in SIGNOS_PUNTUACION:  return 'SIG'
+    if c in LLAVES:             return 'LLV'
+    if c in PARENTESIS:         return 'PAR'
+    return 'UNK'
+
+# ── Tabla de transición M[estado][categoría] → siguiente estado ───────────────
+# Un estado sin entrada en M es estado final: se emite el token acumulado.
+M: dict[str, dict[str, str]] = {
+    'ID':  {'LET': 'ID',  'DIG': 'ID'},
+    'NUM': {'DIG': 'NUM', 'PNT': 'FLT'},
+    'FLT': {'DIG': 'FLT'},
+    'OP':  {'OP':  'OP'},
+}
+
+# Estados de arranque por categoría (desde el estado inicial S)
+_INICIO: dict[str, str] = {
+    'LET': 'ID', 'DIG': 'NUM', 'OP': 'OP',
+    'SIG': 'SIG', 'LLV': 'LLV', 'PAR': 'PAR',
+}
+
+# ── Dataclasses ───────────────────────────────────────────────────────────────
 @dataclass
 class TokenResultado:
-    lexema:  str
-    token:   int
-    tipo:    str
-    linea:   int
-    columna: int
+    lexema: str; token: int; tipo: str; linea: int; columna: int
 
 @dataclass
 class ErrorLexico:
-    caracter: str
-    linea:    int
-    columna:  int
-    mensaje:  str
+    caracter: str; linea: int; columna: int; mensaje: str
 
 @dataclass
 class ResultadoAnalisis:
     tokens:            list[TokenResultado] = field(default_factory=list)
     errores:           list[ErrorLexico]    = field(default_factory=list)
-    # Tokens nuevos descubiertos
-    nuevas_palabras:   dict[str, int] = field(default_factory=dict)
-    nuevos_operadores: dict[str, int] = field(default_factory=dict)
-    nuevos_signos:     dict[str, int] = field(default_factory=dict)
-    nuevos_ids:        dict[str, int] = field(default_factory=dict)
-    nuevos_strings:    dict[str, int] = field(default_factory=dict)
-    # Tokens por línea 
+    nuevas_palabras:   dict[str, int]       = field(default_factory=dict)
+    nuevos_operadores: dict[str, int]       = field(default_factory=dict)
+    nuevos_signos:     dict[str, int]       = field(default_factory=dict)
+    nuevos_ids:        dict[str, int]       = field(default_factory=dict)
     tokens_por_linea:  dict[int, list[int]] = field(default_factory=dict)
 
+
+# ── Analizador léxico ─────────────────────────────────────────────────────────
 class AnalizadorLexico:
-    RE_IDENTIFICADOR = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
-    RE_ILEGAL        = re.compile(r'[ñÑáéíóúüÁÉÍÓÚÜ]')
+
     def __init__(self):
         self._reset()
-    def _reset(self):
-        self._sig_pr  = SIGUIENTE_PALABRA_RESERVADA
-        self._sig_op  = SIGUIENTE_OPERADOR
-        self._sig_sp  = SIGUIENTE_SIGNO
-        self._sig_id  = SIGUIENTE_IDENTIFICADOR
-        self._sig_str = SIGUIENTE_STRING
-        self._nuevas_pr:  dict[str, int] = {}
-        self._nuevos_op:  dict[str, int] = {}
-        self._nuevos_sp:  dict[str, int] = {}
-        self._nuevos_id:  dict[str, int] = {}
-        self._nuevos_str: dict[str, int] = {}
 
+    def _reset(self):
+        self._sig_op = SIGUIENTE_OPERADOR
+        self._sig_sp = SIGUIENTE_SIGNO
+        self._sig_id = SIGUIENTE_IDENTIFICADOR
+        self._nuevas_pr: dict[str, int] = {}
+        self._nuevos_op: dict[str, int] = {}
+        self._nuevos_sp: dict[str, int] = {}
+        self._nuevos_id: dict[str, int] = {}
+
+    # ── Entrada principal ─────────────────────────────────────────────────────
     def analizar(self, codigo: str) -> ResultadoAnalisis:
         self._reset()
-        resultado = ResultadoAnalisis()
-        lineas = codigo.splitlines()
-        for num_linea, linea in enumerate(lineas, start=1):
-            resultado.tokens_por_linea[num_linea] = []
-            self._analizar_linea(linea, num_linea, resultado)
-        resultado.nuevas_palabras   = dict(self._nuevas_pr)
-        resultado.nuevos_operadores = dict(self._nuevos_op)
-        resultado.nuevos_signos     = dict(self._nuevos_sp)
-        resultado.nuevos_ids        = dict(self._nuevos_id)
-        resultado.nuevos_strings    = dict(self._nuevos_str)
-        return resultado
+        res = ResultadoAnalisis()
+        for num_linea, linea in enumerate(codigo.splitlines(), start=1):
+            res.tokens_por_linea[num_linea] = []
+            self._analizar_linea(linea, num_linea, res)
+        res.nuevas_palabras   = dict(self._nuevas_pr)
+        res.nuevos_operadores = dict(self._nuevos_op)
+        res.nuevos_signos     = dict(self._nuevos_sp)
+        res.nuevos_ids        = dict(self._nuevos_id)
+        return res
 
-    def _analizar_linea(self, linea: str, num_linea: int, resultado: ResultadoAnalisis):
-        i = 0
-        n = len(linea)
-        while i < n:
-            # Espacios / tabs
-            if linea[i] in (' ', '\t'):
-                i += 1
+    # ── Autómata (algoritmo del profe corregido) ──────────────────────────────
+    #
+    #   flag = True  → leer siguiente dato (avanzar)
+    #   flag = False → reusar dato actual  (no consumido)
+    #   q0 se resetea a 'S' al inicio de cada token.
+    #
+    def _analizar_linea(self, linea: str, num_linea: int, res: ResultadoAnalisis):
+        chars = linea          # secuencia de entrada (equivale al "archivo")
+        n     = len(chars)
+        i     = 0
+        flag  = True
+        dato  = ''
+
+        while True:                          # Mientras !EOFC
+            if flag:                         # leer dato
+                if i >= n:
+                    break
+                dato  = chars[i]
+                i    += 1
+                flag  = False
+
+            # Ignorar espacios/tabs entre tokens
+            if dato in (' ', '\t'):
+                flag = True
                 continue
 
-            # Comentario -> resto ignorado
-            if linea[i] == '#':
-                break
+            # ── Inicio de un nuevo token ──────────────────────────────────────
+            q0     = 'S'
+            lexema = ''
+            col    = i          # columna del primer carácter (i ya avanzó)
 
-            # Carácter ilegal suelto (ñ, etc.) —> fuera de identificador
-            if self.RE_ILEGAL.match(linea[i]):
-                resultado.errores.append(ErrorLexico(
-                    caracter=linea[i], linea=num_linea, columna=i + 1,
-                    mensaje=f"Carácter ilegal '{linea[i]}' -> no permitido en el lenguaje",
-                ))
-                i += 1
-                continue
+            while True:         # Mientras q0 ∉ F  (F = estados sin salida en M)
+                cat = _cat(dato)
 
-            # == f-string  f"..." ===
-            if linea[i] == 'f' and i + 1 < n and linea[i + 1] == '"':
-                # Consumir todo hasta el cierre
-                j = i + 2
-                while j < n and linea[j] != '"':
-                    j += 1
-                contenido = linea[i + 2:j]   # interior sin comillas
-                lexema_completo = linea[i:j + 1] if j < n else linea[i:]
-                tok = self._asignar_string(lexema_completo, resultado)
-                self._agregar(resultado, lexema_completo, tok, "String", num_linea, i + 1)
-                i = j + 1 if j < n else j
-                continue
-
-            # == String " ... "  ===
-            if linea[i] == '"':
-                j = i + 1
-                while j < n and linea[j] != '"':
-                    j += 1
-                lexema_completo = linea[i:j + 1] if j < n else linea[i:]
-                tok = self._asignar_string(lexema_completo, resultado)
-                self._agregar(resultado, lexema_completo, tok, "String", num_linea, i + 1)
-                i = j + 1 if j < n else j
-                continue
-
-            # == String ' ... '  ===
-            if linea[i] == "'":
-                j = i + 1
-                while j < n and linea[j] != "'":
-                    j += 1
-                lexema_completo = linea[i:j + 1] if j < n else linea[i:]
-                tok = self._asignar_string(lexema_completo, resultado)
-                self._agregar(resultado, lexema_completo, tok, "String", num_linea, i + 1)
-                i = j + 1 if j < n else j
-                continue
-
-            # == Operadores (detecta nuevos automáticamente) ===
-            _OP_CHARS = set('+-*/=<>!&|^~%@')
-            if linea[i] in _OP_CHARS:
-                tok_op = None; largo_op = 0
-                # 3 chars
-                if i + 2 < n:
-                    tres = linea[i:i + 3]
-                    if tres in OPERADORES:
-                        tok_op, largo_op = OPERADORES[tres], 3
-                    elif tres in self._nuevos_op:
-                        tok_op, largo_op = self._nuevos_op[tres], 3
-                # 2 chars
-                if tok_op is None and i + 1 < n:
-                    dos = linea[i:i + 2]
-                    if dos in OPERADORES:
-                        tok_op, largo_op = OPERADORES[dos], 2
-                    elif dos in self._nuevos_op:
-                        tok_op, largo_op = self._nuevos_op[dos], 2
-                # 1 char
-                if tok_op is None:
-                    uno_op = linea[i]
-                    if uno_op in OPERADORES:
-                        tok_op, largo_op = OPERADORES[uno_op], 1
-                    elif uno_op in self._nuevos_op:
-                        tok_op, largo_op = self._nuevos_op[uno_op], 1
-
-                if tok_op is not None:
-                    lexema_op = linea[i:i + largo_op]
-                    tipo_op = "Operador" if lexema_op in OPERADORES else "Operador*"
-                    self._agregar(resultado, lexema_op, tok_op, tipo_op, num_linea, i + 1)
-                    i += largo_op; continue
-                else:
-                    # Operador nuevo: consumir todos los chars de operador contiguos
-                    j = i
-                    while j < n and linea[j] in _OP_CHARS:
-                        j += 1
-                    nuevo_lex = linea[i:j]
-                    nuevo_num = self._sig_op
-                    self._sig_op += 10
-                    self._nuevos_op[nuevo_lex] = nuevo_num
-                    NOMBRES[nuevo_num] = f"OP*:{nuevo_lex}"
-                    resultado.nuevos_operadores[nuevo_lex] = nuevo_num
-                    self._agregar(resultado, nuevo_lex, nuevo_num, "Operador*", num_linea, i + 1)
-                    i = j; continue
-
-            uno = linea[i]
-
-            # == Llaves ===
-            if uno in LLAVES:
-                self._agregar(resultado, uno, LLAVES[uno], "Llave", num_linea, i + 1)
-                i += 1; continue
-
-            # == Paréntesis/Corchetes ===
-            if uno in PARENTESIS:
-                self._agregar(resultado, uno, PARENTESIS[uno], "Paréntesis", num_linea, i + 1)
-                i += 1; continue
-
-            # == Signos de puntuación ===
-            if uno in SIGNOS_PUNTUACION:
-                self._agregar(resultado, uno, SIGNOS_PUNTUACION[uno], "Signo Punc.", num_linea, i + 1)
-                i += 1; continue
-
-            # == Barra inversa ===
-            if uno == '\\':
-                self._agregar(resultado, uno, 3040, "Signo Punc.", num_linea, i + 1)
-                i += 1; continue
-
-            # == Número ===
-            if uno.isdigit():
-                j = i
-                while j < n and linea[j].isdigit():
-                    j += 1
-                # ¿Flotante?
-                if j < n and linea[j] == '.' and j + 1 < n and linea[j + 1].isdigit():
-                    k = j + 1
-                    while k < n and linea[k].isdigit():
-                        k += 1
-                    self._agregar(resultado, linea[i:k], TOKEN_FLOTANTE, "Const. Flotante", num_linea, i + 1)
-                    i = k
-                else:
-                    self._agregar(resultado, linea[i:j], TOKEN_ENTERO_DEC, "Const. Entera", num_linea, i + 1)
-                    i = j
-                continue
-
-            # == Identificador / Palabra reservada ===
-            if uno.isalpha() or uno == '_':
-                j = i
-                while j < n and (linea[j].isalnum() or linea[j] == '_'):
-                    j += 1
-                lexema = linea[i:j]
-                # ¿Tiene ñ u otro ilegal?
-                m_ilegal = self.RE_ILEGAL.search(lexema)
-                if m_ilegal:
-                    resultado.errores.append(ErrorLexico(
-                        caracter=m_ilegal.group(),
-                        linea=num_linea, columna=i + 1 + m_ilegal.start(),
-                        mensaje=f"Carácter ilegal '{m_ilegal.group()}' en '{lexema}'"
-                                f" → la 'ñ' y vocales acentuadas no están permitidas",
+                # Carácter ilegal: registrar error, consumir y pasar al siguiente
+                if cat == 'ILG':
+                    res.errores.append(ErrorLexico(
+                        caracter=dato, linea=num_linea, columna=col,
+                        mensaje=f"Carácter ilegal '{dato}' -> no permitido",
                     ))
-                    i = j; continue
-                token, tipo = self._clasificar_id(lexema)
-                self._agregar(resultado, lexema, token, tipo, num_linea, i + 1)
-                i = j; continue
+                    flag = True
+                    break
 
-            # == Carácter desconocido ===
-            resultado.errores.append(ErrorLexico(
-                caracter=uno, linea=num_linea, columna=i + 1,
-                mensaje=f"Carácter desconocido '{uno}'",
-            ))
-            i += 1
+                # Desde S: decidir el primer estado según categoría del dato
+                if q0 == 'S':
+                    q0 = _INICIO.get(cat, 'UNK')
+                    if q0 == 'UNK':             # carácter desconocido
+                        res.errores.append(ErrorLexico(
+                            caracter=dato, linea=num_linea, columna=col,
+                            mensaje=f"Carácter desconocido '{dato}'",
+                        ))
+                        flag = True
+                        break
+                    # Tokens de un solo carácter (SIG, LLV, PAR) → emitir ya
+                    if q0 in ('SIG', 'LLV', 'PAR'):
+                        lexema = dato
+                        flag   = True
+                        break
+                    # Tokens multi-carácter: acumular primer carácter
+                    lexema += dato
+                    # Leer siguiente dato para continuar
+                    if i < n:
+                        dato  = chars[i]
+                        i    += 1
+                    else:
+                        flag = True
+                        break
+                    continue
 
-    # == Helpers ===
-    def _agregar(self, resultado: ResultadoAnalisis,
-                 lexema: str, token: int, tipo: str,
-                 linea: int, columna: int):
-        if token not in NOMBRES:
-            NOMBRES[token] = f"{tipo}:{lexema}"
-        tr = TokenResultado(lexema, token, tipo, linea, columna)
-        resultado.tokens.append(tr)
-        resultado.tokens_por_linea.setdefault(linea, []).append(token)
+                # Intentar transición M[q0][cat]
+                sig = M.get(q0, {}).get(cat)
+                if sig:                         # transición válida → acumular
+                    lexema += dato
+                    q0      = sig
+                    if i < n:
+                        dato  = chars[i]
+                        i    += 1
+                    else:
+                        flag = True
+                        break
+                else:                           # sin transición → token completo
+                    flag = False                # reusar dato en el siguiente token
+                    break
 
-    def _clasificar_id(self, lexema: str) -> tuple[int, str]:
-        if lexema in PALABRAS_RESERVADAS:
-            return PALABRAS_RESERVADAS[lexema], "Pal. Reservada"
-        if lexema in self._nuevas_pr:
-            return self._nuevas_pr[lexema], "Pal. Reservada*"
-        if lexema in IDENTIFICADORES_CONOCIDOS:
-            return IDENTIFICADORES_CONOCIDOS[lexema], "Identificador"
-        if lexema in self._nuevos_id:
-            return self._nuevos_id[lexema], "Identificador*"
-        nuevo = self._sig_id
-        self._sig_id += 10
-        self._nuevos_id[lexema] = nuevo
-        NOMBRES[nuevo] = f"ID*:{lexema}"
-        return nuevo, "Identificador*"
+            # ── Emitir token ──────────────────────────────────────────────────
+            if lexema and q0 not in ('S', 'UNK'):
+                self._emitir(res, lexema, q0, num_linea, col)
 
-    def _asignar_string(self, lexema: str, resultado: ResultadoAnalisis) -> int:
-        """Asigna token a un string literal. Siempre crea token nuevo por valor único."""
-        if lexema in self._nuevos_str:
-            return self._nuevos_str[lexema]
-        # Primer string --> 9010, siguientes --> 9020, 9030 …
-        if not self._nuevos_str:
-            nuevo = TOKEN_STRING          # 9010
-        else:
-            nuevo = self._sig_str
-            self._sig_str += 10
-        self._nuevos_str[lexema] = nuevo
-        NOMBRES[nuevo] = f"STR:{lexema[:20]}"
-        resultado.nuevos_strings[lexema] = nuevo
-        return nuevo
+    # ── Emitir según estado final ─────────────────────────────────────────────
+    def _emitir(self, res: ResultadoAnalisis, lexema: str, estado: str,
+                num_linea: int, col: int):
+        match estado:
+            case 'ID':
+                tok, tipo = self._id(lexema)
+            case 'NUM':
+                tok, tipo = TOKEN_ENTERO_DEC, "Const. Entera"
+            case 'FLT':
+                tok, tipo = TOKEN_FLOTANTE, "Const. Flotante"
+            case 'OP':
+                tok, tipo = self._op(lexema)
+            case 'SIG':
+                tok, tipo = self._sig(lexema)
+            case 'LLV':
+                tok, tipo = LLAVES[lexema], "Llave"
+            case 'PAR':
+                tok, tipo = PARENTESIS[lexema], "Paréntesis"
+            case _:
+                return
+
+        if tok not in NOMBRES:
+            NOMBRES[tok] = f"{tipo}:{lexema}"
+        res.tokens.append(TokenResultado(lexema, tok, tipo, num_linea, col))
+        res.tokens_por_linea.setdefault(num_linea, []).append(tok)
+
+    # ── Clasificadores ────────────────────────────────────────────────────────
+    def _id(self, lex: str) -> tuple[int, str]:
+        if lex in PALABRAS_RESERVADAS:    return PALABRAS_RESERVADAS[lex],    "Pal. Reservada"
+        if lex in self._nuevas_pr:        return self._nuevas_pr[lex],        "Pal. Reservada*"
+        if lex in IDENTIFICADORES_CONOCIDOS: return IDENTIFICADORES_CONOCIDOS[lex], "Identificador"
+        if lex in self._nuevos_id:        return self._nuevos_id[lex],        "Identificador*"
+        n = self._sig_id;  self._sig_id += 10
+        self._nuevos_id[lex] = n;  NOMBRES[n] = f"ID*:{lex}"
+        return n, "Identificador*"
+
+    def _op(self, lex: str) -> tuple[int, str]:
+        if lex in OPERADORES:       return OPERADORES[lex],       "Operador"
+        if lex in self._nuevos_op:  return self._nuevos_op[lex],  "Operador*"
+        n = self._sig_op;  self._sig_op += 10
+        self._nuevos_op[lex] = n;  NOMBRES[n] = f"OP*:{lex}"
+        return n, "Operador*"
+
+    def _sig(self, lex: str) -> tuple[int, str]:
+        if lex in SIGNOS_PUNTUACION:   return SIGNOS_PUNTUACION[lex],   "Signo Punc."
+        if lex in self._nuevos_sp:     return self._nuevos_sp[lex],     "Signo Punc.*"
+        n = self._sig_sp;  self._sig_sp += 10
+        self._nuevos_sp[lex] = n;  NOMBRES[n] = f"SP*:{lex}"
+        return n, "Signo Punc.*"
